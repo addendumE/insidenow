@@ -80,7 +80,7 @@ void dmxInit(uart_port_t _uartId,gpio_num_t _rxPin, size_t _dmxChannels)
         .parity    = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_2,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-        .source_clk = UART_SCLK_APB
+        .source_clk = UART_SCLK_RTC
     };
     
     ESP_ERROR_CHECK(uart_driver_install(uartId, 1024 * 2, 0, 20, &uartQueue, ESP_INTR_FLAG_IRAM));

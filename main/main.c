@@ -15,6 +15,9 @@
 #include "now.h"
 #include "nvs.h"
 #include "console.h"
+#include "ws2812.h"
+
+#include "ws2812_bitbang.h"
 
 static const char *TAG = "MAIN";
 
@@ -23,7 +26,8 @@ static const char *TAG = "MAIN";
 
 // GATEWAY MODE CONFIGRATION
 #define UART_RX_PIN GPIO_NUM_4
-#define LED_CTRL_PIN GPIO_NUM_5
+#define LED_CTRL_PIN GPIO_NUM_20
+#define LED_POWER_PIN GPIO_NUM_19
 // NODE MODE CONFIGURATION
 
 int nodeAddress;//if nodeAddress < 0 then gateway mode
@@ -34,6 +38,7 @@ static int consoleTx(int argc, char **argv);
 static void gatewayTask(void *arg);
 static void nodeTask(void *arg);
 
+__attribute__((unused))
 static const esp_console_cmd_t cmd_tx = {
 	 .command = "tx",
 	 .help = NULL,
@@ -44,6 +49,7 @@ static const esp_console_cmd_t cmd_tx = {
 	 .context = NULL
 };
 
+__attribute__((unused))
 static const esp_console_cmd_t cmd_address = {
 	 .command = "address",
 	 .help = NULL,
@@ -54,6 +60,7 @@ static const esp_console_cmd_t cmd_address = {
 	 .context = NULL
 };
 
+__attribute__((unused))
 static const esp_console_cmd_t cmd_reboot = {
 	 .command = "reboot",
 	 .help = NULL,
@@ -170,6 +177,21 @@ void nodeTask(void *arg)
         t_payload pl;
         if (nowReceive(&pl)) {
             ESP_LOG_BUFFER_HEX_LEVEL("RECEIVE", pl.data,pl.len, ESP_LOG_INFO);
+            // interpret payload: 3 bytes per node; take our node's 3 bytes and apply to whole strip
+            if (nodeAddress >= 0) {
+                size_t idx = nodeAddress * 3;
+                if (pl.len >= idx + 3) {
+                    uint8_t r = pl.data[idx + 0];
+                    uint8_t g = pl.data[idx + 1];
+                    uint8_t b = pl.data[idx + 2];
+                    ESP_LOGI(TAG, "Applying color R:%d G:%d B:%d", r, g, b);
+                    // ...existing code...
+                    ws2812BitbangSetAllRGB(r, g, b);
+                }
+                else {
+                    ESP_LOGW(TAG, "payload too short for node %d (len=%d)", nodeAddress, pl.len);
+                }
+            }
         }
     }
 }
@@ -192,6 +214,19 @@ void gatewayInit()
 void nodeInit()
 {
     nowInit(NOW_CHANNEL,false,true); // rx enabled
+    ledInit(LED_CTRL_PIN);
+    // Inizializza e accendi il pin di alimentazione LED
+    gpio_config_t io_conf = {
+        .pin_bit_mask = 1ULL << LED_POWER_PIN,
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&io_conf);
+    gpio_set_level(LED_POWER_PIN, 1);
+    ws2812BitbangInit(LED_CTRL_PIN, WS2812_NUM_LEDS);
+    ws2812BitbangSetAllRGB(0, 255, 0);
     xTaskCreate(
         nodeTask,
         "nodeTask",

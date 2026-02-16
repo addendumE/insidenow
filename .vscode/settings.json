@@ -1,0 +1,12 @@
+{
+    "idf.currentSetup": "/Users/riccardo/esp/.espressif/v5.5.2/esp-idf",
+    "idf.openOcdConfigs": [
+        "board/esp32c6-builtin.cfg"
+    ],
+    "idf.customExtraVars": {
+        "IDF_TARGET": "esp32c6",
+        "ADF_PATH": "/Users/riccardo/esp"
+    },
+    "idf.port": "/dev/tty.usbmodem1141101",
+    "idf.flashType": "UART"
+}
