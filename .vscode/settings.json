@@ -8,5 +8,6 @@
         "ADF_PATH": "/Users/riccardo/esp"
     },
     "idf.port": "/dev/tty.usbmodem1141101",
-    "idf.flashType": "UART"
+    "idf.flashType": "UART",
+    "idf.portWin": "COM16"
 }
