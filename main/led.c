@@ -50,3 +50,8 @@ void ledPulse(size_t us)
     symbol.duration0 = us;
     rmt_transmit(rmt_chan, encoder, &symbol, sizeof(symbol), &tx_config);
 }
+
+rmt_channel_handle_t ledGetRmtChannel(void)
+{
+    return rmt_chan;
+}
