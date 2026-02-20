@@ -2,3 +2,5 @@
 .project
 build/
 sdkconfig.old
+dependencies.lock
+managed_components/
