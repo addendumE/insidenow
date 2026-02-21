@@ -14,39 +14,32 @@ static volatile uint8_t *dmxData;
 
 void dmx_rx_task(void *arg)
 {
-    static int dmxIndex = 0;
     uart_event_t event;
-    uint8_t byte;
     ESP_LOGI(TAG, "READY");
+    bool brk = false;
     while (1) {
         if (xQueueReceive(uartQueue, &event, portMAX_DELAY)) {
-
             switch (event.type) {
-
             case UART_BREAK:
                 // Inizio nuovo frame DMX
-                dmxIndex = 0;
+                uart_flush_input(uartId);
+                brk = true;
                 break;
 
             case UART_DATA:
-                while (uart_read_bytes(uartId, &byte, 1, 0)) {
-                    if (dmxIndex <= dmxChannels) {
-                        dmxData[dmxIndex++] = byte;
-                    }
-                }
-
-                if (dmxIndex > dmxChannels) {
+                if (brk && uart_read_bytes(uartId, dmxData, dmxChannels+1,0))
+                {
                     xQueueSend(dmxQueue, (void *)&dmxData[1], 0);
                 }
+                brk = false;
                 break;
 
             case UART_FIFO_OVF:
             case UART_BUFFER_FULL:
-                dmxIndex = 0;
                 uart_flush_input(uartId);
                 xQueueReset(uartQueue);
+                brk = false;
                 break;
-
             default:
                 break;
             }
@@ -72,7 +65,7 @@ void dmxInit(uart_port_t _uartId,gpio_num_t _rxPin, size_t _dmxChannels)
     uartId = _uartId;
     dmxChannels = _dmxChannels;
     dmxQueue = xQueueCreate(1, dmxChannels);//1 frame in coda
-    dmxData = malloc (dmxChannels + 1); // slot 0 = start code
+    dmxData = malloc (dmxChannels + 10); // slot 0 = start code
 
     uart_config_t uart_config = {
         .baud_rate = 250000,
@@ -96,6 +89,5 @@ void dmxInit(uart_port_t _uartId,gpio_num_t _rxPin, size_t _dmxChannels)
         NULL
     );
     // Abilita rilevamento BREAK
-    ESP_ERROR_CHECK(uart_enable_intr_mask(uartId, UART_BRK_DET_INT_ENA));
-
+    ESP_ERROR_CHECK(uart_enable_intr_mask(uartId, UART_BRK_DET_INT_ENA | UART_FRM_ERR_INT_ENA));
 }

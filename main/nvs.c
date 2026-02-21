@@ -39,12 +39,48 @@ bool nvsSetNodeAddress(int address)
     return ret;
 }
 
+bool nvsSetChannelCount(int channel)
+{
+    bool ret = true;
+    if (nvsOpenNs(true))
+    {
+        esp_err_t err = nvs_set_i32(nvs_handler, "channel", channel);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Errore scrittura (%s)", esp_err_to_name(err));
+            ret = false;
+        }
+        err = nvs_commit(nvs_handler);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Errore commit (%s)", esp_err_to_name(err));
+            ret = false;
+        }
+        nvs_close(nvs_handler);
+    }
+    return ret;
+}
+
 int nvsGetNodeAddress()
 {
     int32_t ret = 0;
     if (nvsOpenNs(false))
     {
         esp_err_t err = nvs_get_i32(nvs_handler, "nodeAddress", &ret);
+        if (err == ESP_ERR_NVS_NOT_FOUND) {
+            ESP_LOGW(TAG, "Valore non trovato");
+        } else if (err != ESP_OK) {
+            ESP_LOGE(TAG, "Errore lettura (%s)", esp_err_to_name(err));
+        }
+        nvs_close(nvs_handler);
+    }
+    return ret;
+}
+
+int nvsGetChannelCount()
+{
+    int32_t ret = 0;
+    if (nvsOpenNs(false))
+    {
+        esp_err_t err = nvs_get_i32(nvs_handler, "channel", &ret);
         if (err == ESP_ERR_NVS_NOT_FOUND) {
             ESP_LOGW(TAG, "Valore non trovato");
         } else if (err != ESP_OK) {

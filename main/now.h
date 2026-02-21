@@ -1,4 +1,4 @@
-#define MAX_PAYLOAD_SIZE 255
+#define MAX_PAYLOAD_SIZE 250
 
 typedef struct {
     uint16_t len;

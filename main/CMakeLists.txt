@@ -1,7 +1,6 @@
 file(GLOB SOURCES 
     "main.c"
     "dmx.c"
-    "led.c"
     "now.c"
     "console.c"
     "nvs.c"

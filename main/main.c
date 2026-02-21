@@ -11,7 +11,6 @@
 #include "esp_rom_crc.h"
 #include "nvs_flash.h"
 #include "dmx.h"
-#include "led.h"
 #include "now.h"
 #include "nvs.h"
 #include "console.h"
@@ -24,7 +23,8 @@ static const char *TAG = "MAIN";
 #define NUM_LEDS 12
 
 // GATEWAY MODE CONFIGRATION
-#define UART_RX_PIN GPIO_NUM_4
+#define UART_RX_PIN GPIO_NUM_9
+#define LED_STS_PIN GPIO_NUM_8
 #define LED_CTRL_PIN GPIO_NUM_20
 #define LED_POWER_PIN GPIO_NUM_3
 // NODE MODE CONFIGURATION
@@ -32,6 +32,7 @@ static const char *TAG = "MAIN";
 int nodeAddress;//if nodeAddress < 0 then gateway mode
 static led_strip_handle_t pStrip_a;
 
+static int consoleChannel(int argc, char **argv);
 static int consoleAddress(int argc, char **argv);
 static int consoleReboot(int argc, char **argv);
 static int consoleTx(int argc, char **argv);
@@ -82,6 +83,17 @@ static const esp_console_cmd_t cmd_reboot = {
 	 .context = NULL
 };
 
+static const esp_console_cmd_t cmd_channel = {
+	 .command = "channel",
+	 .help = NULL,
+	 .hint = NULL,
+	 .func = &consoleChannel,
+	 .argtable = NULL,
+	 .func_w_context = NULL,
+	 .context = NULL
+};
+
+
 int consoleTx(int argc, char **argv)
 {
     if (argc == 2)
@@ -130,6 +142,30 @@ int consoleAddress(int argc, char **argv)
     return 0;
 }
 
+int consoleChannel(int argc, char **argv)
+{
+    if (argc == 2) {
+        int channels;
+        if (sscanf(argv[1],"%d",&channels) == 1) {
+            if (channels <= 250 && channels >= 1) {
+                nvsSetChannelCount(channels);
+            }
+            else {
+                ESP_LOGE(TAG,"channel range is [1-250]");
+                return -1;
+            }
+        }
+        else {
+            ESP_LOGE(TAG,"wrong channel format");
+            return -1;
+        }
+    }
+    else {
+        printf ("channel count is: %d\n",nvsGetChannelCount());
+    }
+    return 0;
+}
+
 int consoleReboot(int argc, char **argv)
 {
     esp_restart();
@@ -154,12 +190,19 @@ int consoleLed(int argc, char **argv)
     }
     return 0;
 }
+void led_toggle()
+{
+    static bool level = false;
+    gpio_set_level(LED_STS_PIN, level);    
+    level = !level;
+}
 
 // MAIN TASK FOR GATEWAY MODE
 void  gatewayTask(void *arg)
 {
+    size_t channels = nvsGetChannelCount();
     uint32_t oldCrc, frmCounter = 0, failCounter = 0;
-    uint8_t dmxData[DMX_CHANNELS];
+    uint8_t dmxData[channels];
     TickType_t xLastHBtime = 0 ;
 
     ESP_LOGI(TAG, "MAIN GATEWAY TASK READY");
@@ -172,18 +215,12 @@ void  gatewayTask(void *arg)
             xLastHBtime =  xTaskGetTickCount();
         }
         if (dmxGet(dmxData)) {
-            
-            uint32_t newCrc = esp_rom_crc32_le(0, dmxData, DMX_CHANNELS);
+            led_toggle();
+            uint32_t newCrc = esp_rom_crc32_le(0, dmxData, channels);
             if ((frmCounter % 15) == 0 || oldCrc != newCrc)
             {
-                nowSend(dmxData,DMX_CHANNELS);
-                ledPulse(15000);
-                ESP_LOG_BUFFER_HEX_LEVEL("SEND", dmxData,DMX_CHANNELS, ESP_LOG_INFO);
+                nowSend(dmxData,channels);
                 oldCrc = newCrc;
-            }
-            else
-            {
-                ledPulse(5000);
             }
             frmCounter ++;
             failCounter = 0;
@@ -191,8 +228,8 @@ void  gatewayTask(void *arg)
         else {
             failCounter++;
             frmCounter = 0;
-            if (failCounter % 100 == 0) {
-               ESP_LOGI(TAG, "NO SYNC");
+            if (failCounter % 25 == 0) {
+               led_toggle();
             }
         }
     }
@@ -237,8 +274,10 @@ void nodeTask(void *arg)
 
 void gatewayInit()
 {
-    dmxInit(UART_NUM_1, UART_RX_PIN,MAX_NODES*3);
-    ledInit(LED_CTRL_PIN);
+    dmxInit(UART_NUM_1, UART_RX_PIN,nvsGetChannelCount());
+    gpio_reset_pin(LED_STS_PIN);
+    gpio_set_direction(LED_STS_PIN, GPIO_MODE_OUTPUT);
+    gpio_set_level(LED_STS_PIN, true);    
     nowInit(NOW_CHANNEL,false,false); // rx disabled 
     xTaskCreate(
         gatewayTask,
@@ -297,14 +336,15 @@ void app_main(void)
     consoleInit();
     consoleRegister(&cmd_tx);
     consoleRegister(&cmd_reboot);
-    consoleRegister(&cmd_address);
-    consoleRegister(&cmd_led);
+    consoleRegister(&cmd_address);    
     nodeAddress = nvsGetNodeAddress();
     if ( nodeAddress < 0) {
+        consoleRegister(&cmd_channel);
         gatewayInit();
         ESP_LOGI(TAG, "GATEWAY READY TO GO");
     }
     else {
+        consoleRegister(&cmd_led);
         nodeInit();
         ESP_LOGI(TAG, "NODE READY TO GO ON ADDRESS: %d",nodeAddress);
     }
