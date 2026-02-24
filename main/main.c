@@ -25,7 +25,7 @@ static const char *TAG = "MAIN";
 // GATEWAY MODE CONFIGRATION
 #define UART_RX_PIN GPIO_NUM_9
 #define LED_STS_PIN GPIO_NUM_8
-#define LED_CTRL_PIN GPIO_NUM_20
+#define LED_CTRL_PIN GPIO_NUM_8
 #define LED_POWER_PIN GPIO_NUM_3
 // NODE MODE CONFIGURATION
 
@@ -39,7 +39,7 @@ static int consoleTx(int argc, char **argv);
 static int consoleLed(int argc, char **argv);
 static void gatewayTask(void *arg);
 static void nodeTask(void *arg);
-static void led_strip_set_all_rgb(uint8_t r, uint8_t g, uint8_t b);
+static void led_strip_set_all_rgb(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2);
 
 
 
@@ -177,7 +177,7 @@ int consoleLed(int argc, char **argv)
     if (argc == 4) {
         int r,g,b;
         if (sscanf(argv[1],"%d",&r) == 1 && sscanf(argv[2],"%d",&g) == 1 && sscanf(argv[3],"%d",&b) == 1) {
-            led_strip_set_all_rgb(r,g,b);
+            led_strip_set_all_rgb(r,g,b,0,0,0);
         }
         else {
             ESP_LOGE(TAG,"wrong color format");
@@ -235,12 +235,15 @@ void  gatewayTask(void *arg)
     }
 }
 
-void led_strip_set_all_rgb(uint8_t r, uint8_t g, uint8_t b)
+void led_strip_set_all_rgb(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2)
 {
     gpio_set_level(LED_POWER_PIN, 1);
-    ESP_LOGI(TAG, "Setting all LEDs to R:%d G:%d B:%d", r, g, b);
-    for (int i = 0; i < NUM_LEDS; i++) {
-        ESP_ERROR_CHECK(led_strip_set_pixel(pStrip_a, i, r, g, b));
+    ESP_LOGI(TAG, "Setting all LEDs to R:%d G:%d B:%d + R:%d G:%d B:%d", r1, g1, b1, r2, g2, b2);
+    for (int i = 0; i < NUM_LEDS/2; i++) {
+        ESP_ERROR_CHECK(led_strip_set_pixel(pStrip_a, i, r1, g1, b1));
+    }
+    for (int i = NUM_LEDS/2; i < NUM_LEDS; i++) {
+        ESP_ERROR_CHECK(led_strip_set_pixel(pStrip_a, i, r2, g2, b2));
     }
     ESP_ERROR_CHECK(led_strip_refresh(pStrip_a));
 }
@@ -257,12 +260,15 @@ void nodeTask(void *arg)
             // interpret payload: 3 bytes per node; take our node's 3 bytes and apply to whole strip
             if (nodeAddress >= 0) {
                 size_t idx = nodeAddress * 3;
-                if (pl.len >= idx + 3) {
-                    uint8_t r = pl.data[idx + 0];
-                    uint8_t g = pl.data[idx + 1];
-                    uint8_t b = pl.data[idx + 2];
-                    ESP_LOGI(TAG, "Applying color R:%d G:%d B:%d", r, g, b);
-                    led_strip_set_all_rgb(r, g, b);
+                if (pl.len >= idx + 6) {
+                    uint8_t r1 = pl.data[idx + 0];
+                    uint8_t g1 = pl.data[idx + 1];
+                    uint8_t b1 = pl.data[idx + 2];
+                    uint8_t r2 = pl.data[idx + 3];
+                    uint8_t g2 = pl.data[idx + 4];
+                    uint8_t b2 = pl.data[idx + 5];
+                    ESP_LOGI(TAG, "Applying color R:%d G:%d B:%d + R:%d G:%d B:%d", r1, g1, b1, r2, g2, b2);
+                    led_strip_set_all_rgb(r1, g1, b1, r2, g2, b2);
                 }
                 else {
                     ESP_LOGW(TAG, "payload too short for node %d (len=%d)", nodeAddress, pl.len);
@@ -313,7 +319,7 @@ void nodeInit()
     };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &pStrip_a));
     
-    led_strip_set_all_rgb(0, 0, 255);
+    //led_strip_set_all_rgb(0, 0, 255);
     xTaskCreate(
         nodeTask,
         "nodeTask",
