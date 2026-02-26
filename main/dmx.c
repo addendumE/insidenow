@@ -9,36 +9,32 @@ static const char *TAG = "DMX";
 static QueueHandle_t uartQueue;
 static QueueHandle_t dmxQueue;
 static uart_port_t uartId;
-static size_t dmxChannels;
-static volatile uint8_t *dmxData;
+
+static uint8_t dmxData[DMX_DATA_SIZE];
 
 void dmx_rx_task(void *arg)
 {
     uart_event_t event;
     ESP_LOGI(TAG, "READY");
-    bool brk = false;
+    size_t to_read;
     while (1) {
         if (xQueueReceive(uartQueue, &event, portMAX_DELAY)) {
             switch (event.type) {
             case UART_BREAK:
-                // Inizio nuovo frame DMX
-                uart_flush_input(uartId);
-                brk = true;
-                break;
-
-            case UART_DATA:
-                if (brk && uart_read_bytes(uartId, dmxData, dmxChannels+1,0))
+                uart_get_buffered_data_len(uartId, &to_read);
+                if (to_read == sizeof(dmxData)+1)
                 {
-                    xQueueSend(dmxQueue, (void *)&dmxData[1], 0);
+                    uart_read_bytes(uartId, dmxData, 1,0);//skip first byte
+                    uart_read_bytes(uartId, dmxData, sizeof(dmxData),0);
+                    xQueueSend(dmxQueue, &dmxData, 0);
                 }
-                brk = false;
+                uart_flush_input(uartId);
                 break;
-
             case UART_FIFO_OVF:
             case UART_BUFFER_FULL:
+                ESP_LOGE(TAG,"uart fifo overflow");
                 uart_flush_input(uartId);
                 xQueueReset(uartQueue);
-                brk = false;
                 break;
             default:
                 break;
@@ -50,23 +46,13 @@ void dmx_rx_task(void *arg)
 bool dmxGet( uint8_t * dest)
 {
     // 1 frame ogni 20 ms circa, dopo 50ms sync perso
-    return xQueueReceive(dmxQueue, (void *)dest, 50 / portTICK_PERIOD_MS) == pdTRUE;
+    return xQueueReceive(dmxQueue, dest, 50 / portTICK_PERIOD_MS) == pdTRUE;
 }
 
-bool dmxSet( uint8_t * dest)
-{
-    //inietta un frame nella coda (debug)
-    return xQueueSend(dmxQueue, (void *)dest, 0) == pdTRUE;
-}
-
-
-void dmxInit(uart_port_t _uartId,gpio_num_t _rxPin, size_t _dmxChannels)
+void dmxInit(uart_port_t _uartId,gpio_num_t _rxPin)
 {
     uartId = _uartId;
-    dmxChannels = _dmxChannels;
-    dmxQueue = xQueueCreate(1, dmxChannels);//1 frame in coda
-    dmxData = malloc (dmxChannels + 10); // slot 0 = start code
-
+    dmxQueue = xQueueCreate(1, sizeof(dmxData));//1 frame in coda
     uart_config_t uart_config = {
         .baud_rate = 250000,
         .data_bits = UART_DATA_8_BITS,

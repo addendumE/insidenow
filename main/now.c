@@ -32,7 +32,7 @@ static void nowRecvCb(const esp_now_recv_info_t *recv_info,
 
 void nowSend(const void *data, size_t len)
 {
-    ESP_LOG_BUFFER_HEX_LEVEL("TX", data,len,ESP_LOG_INFO);
+    //ESP_LOG_BUFFER_HEX_LEVEL("TX", data,len,ESP_LOG_INFO);
     esp_now_send(ESPNOW_BROADCAST_MAC, data, len);
 }
 
