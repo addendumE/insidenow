@@ -16,6 +16,8 @@
 #include "console.h"
 #include "led_strip.h"
 
+#define DEBUG_VISIVO 1
+
 static const char *TAG = "MAIN";
 #define MAX_GATEWAY_PAYLOAD 250
 
@@ -244,6 +246,53 @@ void nodeTask(void *arg)
     }
 }
 
+void visive_debug_task(void *arg)
+{
+    typedef enum {
+        STATE_RED,
+        STATE_GREEN,
+        STATE_BLUE,
+        STATE_RED_BLUE,
+        STATE_GREEN_BLUE,
+        STATE_WHITE_BLUE,
+        NUM_STATES
+    } led_state_t;
+
+    led_state_t currentState = STATE_RED;
+    ESP_LOGI(TAG, "Visual debug task started");
+
+    while(1)
+    {
+        switch (currentState) {
+            case STATE_RED:
+                led_strip_set_all_rgb(255, 0, 0, 255, 0, 0);
+                break;
+            case STATE_GREEN:
+                led_strip_set_all_rgb(0, 255, 0, 0, 255, 0);
+                break;
+            case STATE_BLUE:
+                led_strip_set_all_rgb(0, 0, 255, 0, 0, 255);
+                break;
+            case STATE_RED_BLUE:
+                led_strip_set_all_rgb(255, 0, 0, 0, 0, 255);
+                break;
+            case STATE_GREEN_BLUE:
+                led_strip_set_all_rgb(0, 255, 0, 0, 0, 255);
+                break;
+            case STATE_WHITE_BLUE:
+                led_strip_set_all_rgb(255, 255, 255, 0, 0, 255);
+                break;
+            default:
+                // Questo caso non dovrebbe mai essere raggiunto, ma per sicurezza
+                // resettiamo lo stato.
+                currentState = STATE_RED;
+                break;
+        }
+        currentState = (currentState + 1) % NUM_STATES;
+        vTaskDelay(1000 / portTICK_PERIOD_MS);
+    }
+}
+
 void gatewayInit()
 {
     dmxInit(UART_NUM_1, UART_RX_PIN);
@@ -297,6 +346,18 @@ void nodeInit()
 
 }
 
+void visive_debug_init()
+{
+    xTaskCreate(
+        visive_debug_task,
+        "visive_debug_task",
+        4096,
+        NULL,
+        10,
+        NULL
+    );
+}
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -318,5 +379,8 @@ void app_main(void)
         consoleRegister(&cmd_led);
         nodeInit();
         ESP_LOGI(TAG, "NODE READY TO GO ON ADDRESS: %d",nodeAddress);
+        #ifdef DEBUG_VISIVO
+            visive_debug_init();    
+        #endif
     }
 }
