@@ -93,7 +93,7 @@ int consoleTx(int argc, char **argv)
         if (len > MAX_PAYLOAD_SIZE) len = MAX_PAYLOAD_SIZE;
         uint8_t *data = malloc(len);
         char *pos = argv[1];
-        // from hex strin to byte array
+        // from hex string to byte array
         for (size_t count = 0; count < len; count++) {
             if (sscanf(pos, "%2hhx", data+count) != 1)
             {
@@ -158,6 +158,7 @@ int consoleLed(int argc, char **argv)
     }
     return 0;
 }
+
 void led_toggle()
 {
     static bool level = false;
@@ -170,22 +171,13 @@ void  gatewayTask(void *arg)
 {
     uint32_t oldCrc, frmCounter = 0, failCounter = 0;
     unsigned char dmxData[DMX_DATA_SIZE];
-    TickType_t xLastHBtime = 0 ;
-
     ESP_LOGI(TAG, "MAIN GATEWAY TASK READY");
 
-    while(1)
-    {
-        
-        if (xTaskGetTickCount() - xLastHBtime > 1000/portTICK_PERIOD_MS) {
-            // toggle HB LED
-            xLastHBtime =  xTaskGetTickCount();
-        }
+    while(1) {
         if (dmxGet(dmxData)) {
             led_toggle();
             uint32_t newCrc = esp_rom_crc32_le(0, dmxData, sizeof(dmxData));
-            if ((frmCounter % 15) == 0 || oldCrc != newCrc)
-            {
+            if ((frmCounter % 15) == 0 || oldCrc != newCrc) {
                 ESP_LOG_BUFFER_HEX_LEVEL("TX", dmxData,16, ESP_LOG_INFO);
                 nowSend(dmxData,MAX_GATEWAY_PAYLOAD);
                 oldCrc = newCrc;

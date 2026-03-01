@@ -15,26 +15,28 @@ static uint8_t dmxData[DMX_DATA_SIZE];
 void dmx_rx_task(void *arg)
 {
     uart_event_t event;
-    ESP_LOGI(TAG, "READY");
     size_t to_read;
+    ESP_LOGI(TAG, "READY");
     while (1) {
         if (xQueueReceive(uartQueue, &event, portMAX_DELAY)) {
             switch (event.type) {
             case UART_BREAK:
-                uart_get_buffered_data_len(uartId, &to_read);
-                if (to_read == sizeof(dmxData)+1)
-                {
-                    uart_read_bytes(uartId, dmxData, 1,0);//skip first byte
-                    uart_read_bytes(uartId, dmxData, sizeof(dmxData),0);
-                    xQueueSend(dmxQueue, &dmxData, 0);
+                if (uart_get_buffered_data_len(uartId, &to_read)) {
+                    if (to_read == sizeof(dmxData)+1) {
+                        uart_read_bytes(uartId, dmxData, 1,0);//skip first byte
+                        uart_read_bytes(uartId, dmxData, sizeof(dmxData),0);
+                        xQueueSend(dmxQueue, &dmxData, 0);
+                    }
+                    uart_flush_input(uartId);
                 }
-                uart_flush_input(uartId);
+                else {
+                    ESP_LOGE(TAG,"uart_get_buffered_data_len failed");
+                }
                 break;
             case UART_FIFO_OVF:
             case UART_BUFFER_FULL:
                 ESP_LOGE(TAG,"uart fifo overflow");
                 uart_flush_input(uartId);
-                xQueueReset(uartQueue);
                 break;
             default:
                 break;
@@ -63,17 +65,16 @@ void dmxInit(uart_port_t _uartId,gpio_num_t _rxPin)
     };
     
     ESP_ERROR_CHECK(uart_driver_install(uartId, 1024 * 2, 0, 20, &uartQueue, ESP_INTR_FLAG_IRAM));
-
     ESP_ERROR_CHECK(uart_param_config(uartId, &uart_config));
     ESP_ERROR_CHECK(uart_set_pin(uartId, UART_PIN_NO_CHANGE, _rxPin, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE));
+    ESP_ERROR_CHECK(uart_enable_intr_mask(uartId, UART_BRK_DET_INT_ENA | UART_FRM_ERR_INT_ENA));
+
     xTaskCreate(
         dmx_rx_task,
         "dmx_rx_task",
         4096,
         NULL,
-        10,
+        configMAX_PRIORITIES - 1,
         NULL
     );
-    // Abilita rilevamento BREAK
-    ESP_ERROR_CHECK(uart_enable_intr_mask(uartId, UART_BRK_DET_INT_ENA | UART_FRM_ERR_INT_ENA));
 }
