@@ -21,7 +21,7 @@ void dmx_rx_task(void *arg)
         if (xQueueReceive(uartQueue, &event, portMAX_DELAY)) {
             switch (event.type) {
             case UART_BREAK:
-                if (uart_get_buffered_data_len(uartId, &to_read)) {
+                if (uart_get_buffered_data_len(uartId, &to_read) == 0) {
                     if (to_read == sizeof(dmxData)+1) {
                         uart_read_bytes(uartId, dmxData, 1,0);//skip first byte
                         uart_read_bytes(uartId, dmxData, sizeof(dmxData),0);
