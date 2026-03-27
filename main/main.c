@@ -9,6 +9,8 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_rom_crc.h"
+#include "esp_sleep.h"
+#include "driver/gpio.h"
 #include "nvs_flash.h"
 #include "dmx.h"
 #include "now.h"
@@ -16,7 +18,7 @@
 #include "console.h"
 #include "led_strip.h"
 
-#define DEBUG_VISIVO 1
+//#define DEBUG_VISIVO 1
 
 static const char *TAG = "MAIN";
 #define MAX_GATEWAY_PAYLOAD 250
@@ -25,14 +27,44 @@ static const char *TAG = "MAIN";
 #define MAX_NODES 10
 #define NUM_LEDS 12
 
-// GATEWAY MODE CONFIGRATION
+// GATEWAY MODE CONFIGURATION
 #define UART_RX_PIN GPIO_NUM_9
 #define LED_STS_PIN GPIO_NUM_8
 #define LED_CTRL_PIN GPIO_NUM_8
 #define LED_POWER_PIN GPIO_NUM_3
+
 // NODE MODE CONFIGURATION
 
-int nodeAddress;//if nodeAddress < 0 then gateway mode
+// --- Gestione risparmio energetico (solo modalità nodo) ---
+// GPIO del tasto wake-up/spegnimento (active-low: pull-up, GND quando premuto)
+#define NODE_WAKEUP_GPIO            GPIO_NUM_1
+
+// Timeout dall'avvio senza aver mai ricevuto dati → deep sleep (ms)
+#define TIMEOUT_SPEGNIMENTO_AVVIO   (5 * 60 * 1000)
+
+// Tempo senza dati (dopo averne ricevuti) prima di iniziare il blink arancio (ms)
+#define TIMEOUT_SEGNALE_PERSO       (2000)
+
+// Tempo totale in blink arancio prima di andare in deep sleep (ms)
+#define TIMEOUT_SPEGNIMENTO_SEGNALE_PERSO (5 * 60 * 1000)
+
+// Sequenza LED rossi prima del deep sleep: numero di lampeggi e semi-periodo (ms)
+#define BLINK_SPEGNIMENTO_NUM       5
+#define BLINK_SPEGNIMENTO_SEMIPERIODO_MS 200
+
+// Semi-periodo del blink arancio durante perdita segnale (ms)
+#define BLINK_ARANCIO_SEMIPERIODO_MS 400
+
+// Durata pressione lunga per spegnimento manuale (ms)
+#define LONG_PRESS_MS               3000
+
+// Lampeggio verde all'avvio: numero di lampeggi e semi-periodo (ms)
+#define BLINK_AVVIO_NUM                 3
+#define BLINK_AVVIO_SEMIPERIODO_MS    200
+// --- Fine defines risparmio energetico ---
+
+
+int nodeAddress; // se nodeAddress < 0 → modalità gateway
 static led_strip_handle_t pStrip_a;
 
 static int consoleAddress(int argc, char **argv);
@@ -41,8 +73,9 @@ static int consoleTx(int argc, char **argv);
 static int consoleLed(int argc, char **argv);
 static void gatewayTask(void *arg);
 static void nodeTask(void *arg);
+static void buttonTask(void *arg);
 static void led_strip_set_all_rgb(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2);
-
+static void node_go_to_sleep(void);
 
 
 static const esp_console_cmd_t cmd_tx = {
@@ -162,7 +195,7 @@ int consoleLed(int argc, char **argv)
 void led_toggle()
 {
     static bool level = false;
-    gpio_set_level(LED_STS_PIN, level);    
+    gpio_set_level(LED_STS_PIN, level);
     level = !level;
 }
 
@@ -208,16 +241,59 @@ void led_strip_set_all_rgb(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8
     ESP_ERROR_CHECK(led_strip_refresh(pStrip_a));
 }
 
+/*
+ * Sequenza di lampeggio rosso + deep sleep.
+ * Configura NODE_WAKEUP_GPIO come sorgente di risveglio, poi entra in deep sleep.
+ * Non ritorna.
+ */
+static void node_go_to_sleep(void)
+{
+    ESP_LOGI(TAG, "Entering deep sleep...");
+
+    // Lampeggio LED rossi prima di dormire
+    for (int i = 0; i < BLINK_SPEGNIMENTO_NUM; i++) {
+        led_strip_set_all_rgb(255, 0, 0, 255, 0, 0);
+        vTaskDelay(pdMS_TO_TICKS(BLINK_SPEGNIMENTO_SEMIPERIODO_MS));
+        led_strip_clear(pStrip_a);
+        vTaskDelay(pdMS_TO_TICKS(BLINK_SPEGNIMENTO_SEMIPERIODO_MS));
+    }
+
+    // Spegni alimentazione LED strip
+    gpio_set_level(LED_POWER_PIN, 0);
+
+    // Configura il GPIO come sorgente di wakeup dal deep sleep (active-low: sveglia su LOW)
+    ESP_ERROR_CHECK(esp_deep_sleep_enable_gpio_wakeup(1ULL << NODE_WAKEUP_GPIO, ESP_GPIO_WAKEUP_GPIO_LOW));
+
+    esp_deep_sleep_start();
+    // Non ritorna mai
+}
+
 // MAIN TASK FOR NODE MODE
 void nodeTask(void *arg)
 {
-    ESP_LOGI(TAG, "MAIN NODE TASK READY WITH ADDRESS %d",nodeAddress);
+    typedef enum {
+        NODE_PWR_WAITING_FIRST,  // in attesa del primo dato dall'avvio
+        NODE_PWR_ACTIVE,         // ricezione normale
+        NODE_PWR_SIGNAL_LOST,    // segnale perso, blink arancio
+    } node_pwr_state_t;
+
+    node_pwr_state_t pwrState = NODE_PWR_WAITING_FIRST;
+    TickType_t stateStartTick = xTaskGetTickCount(); // tick di ingresso nello stato corrente
+    TickType_t lastDataTick   = xTaskGetTickCount(); // tick dell'ultimo dato ricevuto
+    TickType_t lastBlinkTick  = xTaskGetTickCount(); // tick dell'ultimo toggle blink arancio
+    bool blinkLedOn = false;
+
+    ESP_LOGI(TAG, "MAIN NODE TASK READY WITH ADDRESS %d", nodeAddress);
+
     while(1)
     {
         t_payload pl;
-        if (nowReceive(&pl)) {
-            ESP_LOG_BUFFER_HEX_LEVEL("RECEIVE", pl.data,pl.len, ESP_LOG_INFO);
-            // interpret payload: 3 bytes per node; take our node's 3 bytes and apply to whole strip
+        bool received = nowReceive(&pl); // attende al massimo 50ms
+
+        if (received) {
+            ESP_LOG_BUFFER_HEX_LEVEL("RECEIVE", pl.data, pl.len, ESP_LOG_INFO);
+
+            // Interpreta payload: 3 byte per nodo; prende i 6 byte del proprio nodo
             if (nodeAddress >= 0) {
                 size_t idx = nodeAddress * 3;
                 if (pl.len >= idx + 6) {
@@ -234,6 +310,55 @@ void nodeTask(void *arg)
                     ESP_LOGW(TAG, "payload too short for node %d (len=%d)", nodeAddress, pl.len);
                 }
             }
+
+            lastDataTick = xTaskGetTickCount();
+
+            if (pwrState != NODE_PWR_ACTIVE) {
+                ESP_LOGI(TAG, "Signal restored, switching to ACTIVE");
+                pwrState = NODE_PWR_ACTIVE;
+                stateStartTick = xTaskGetTickCount();
+            }
+        }
+
+        // Gestione stati di risparmio energetico
+        TickType_t now = xTaskGetTickCount();
+
+        switch (pwrState) {
+
+            case NODE_PWR_WAITING_FIRST:
+                if ((now - stateStartTick) >= pdMS_TO_TICKS(TIMEOUT_SPEGNIMENTO_AVVIO)) {
+                    ESP_LOGW(TAG, "No data received within startup timeout, going to sleep");
+                    node_go_to_sleep();
+                }
+                break;
+
+            case NODE_PWR_ACTIVE:
+                if ((now - lastDataTick) >= pdMS_TO_TICKS(TIMEOUT_SEGNALE_PERSO)) {
+                    ESP_LOGW(TAG, "Signal lost, starting orange blink");
+                    pwrState = NODE_PWR_SIGNAL_LOST;
+                    stateStartTick = xTaskGetTickCount();
+                    lastBlinkTick  = xTaskGetTickCount();
+                    blinkLedOn = false;
+                }
+                break;
+
+            case NODE_PWR_SIGNAL_LOST:
+                // Controlla timeout totale → deep sleep
+                if ((now - stateStartTick) >= pdMS_TO_TICKS(TIMEOUT_SPEGNIMENTO_SEGNALE_PERSO)) {
+                    ESP_LOGW(TAG, "Signal lost timeout expired, going to sleep");
+                    node_go_to_sleep();
+                }
+                // Blink arancio
+                if ((now - lastBlinkTick) >= pdMS_TO_TICKS(BLINK_ARANCIO_SEMIPERIODO_MS)) {
+                    lastBlinkTick = now;
+                    blinkLedOn = !blinkLedOn;
+                    if (blinkLedOn) {
+                        led_strip_set_all_rgb(255, 80, 0, 255, 80, 0); // arancio
+                    } else {
+                        led_strip_clear(pStrip_a);
+                    }
+                }
+                break;
         }
     }
 }
@@ -275,8 +400,6 @@ void visive_debug_task(void *arg)
                 led_strip_set_all_rgb(255, 255, 255, 0, 0, 255);
                 break;
             default:
-                // Questo caso non dovrebbe mai essere raggiunto, ma per sicurezza
-                // resettiamo lo stato.
                 currentState = STATE_RED;
                 break;
         }
@@ -285,13 +408,40 @@ void visive_debug_task(void *arg)
     }
 }
 
+/*
+ * Task per il monitoraggio del tasto.
+ * - Pressione lunga >= LONG_PRESS_MS: spegnimento (blink rosso + deep sleep)
+ * Il tasto è active-low: livello 0 = premuto.
+ */
+static void buttonTask(void *arg)
+{
+    ESP_LOGI(TAG, "Button task ready on GPIO %d", NODE_WAKEUP_GPIO);
+
+    while(1)
+    {
+        if (gpio_get_level(NODE_WAKEUP_GPIO) == 0) {
+            // Tasto premuto: conta quanto rimane abbassato
+            TickType_t pressStart = xTaskGetTickCount();
+            while (gpio_get_level(NODE_WAKEUP_GPIO) == 0) {
+                vTaskDelay(pdMS_TO_TICKS(20));
+                if ((xTaskGetTickCount() - pressStart) >= pdMS_TO_TICKS(LONG_PRESS_MS)) {
+                    ESP_LOGW(TAG, "Long press detected, going to sleep");
+                    node_go_to_sleep();
+                    // node_go_to_sleep non ritorna mai
+                }
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+}
+
 void gatewayInit()
 {
     dmxInit(UART_NUM_1, UART_RX_PIN);
     gpio_reset_pin(LED_STS_PIN);
     gpio_set_direction(LED_STS_PIN, GPIO_MODE_OUTPUT);
-    gpio_set_level(LED_STS_PIN, true);    
-    nowInit(NOW_CHANNEL,false,false); // rx disabled 
+    gpio_set_level(LED_STS_PIN, true);
+    nowInit(NOW_CHANNEL,false,false); // rx disabled
     xTaskCreate(
         gatewayTask,
         "gatewayTask",
@@ -305,7 +455,7 @@ void gatewayInit()
 void nodeInit()
 {
     nowInit(NOW_CHANNEL,false,true); // rx enabled
-    
+
     // Inizializza e accendi il pin di alimentazione LED
     gpio_config_t io_conf = {
         .pin_bit_mask = 1ULL << LED_POWER_PIN,
@@ -315,18 +465,35 @@ void nodeInit()
         .intr_type = GPIO_INTR_DISABLE
     };
     gpio_config(&io_conf);
-    
+
     gpio_set_level(LED_POWER_PIN, 1);
     led_strip_config_t strip_config = {
         .strip_gpio_num = LED_CTRL_PIN,
-        .max_leds = NUM_LEDS, 
+        .max_leds = NUM_LEDS,
     };
     led_strip_rmt_config_t rmt_config = {
         .resolution_hz = 10 * 1000 * 1000, // 10MHz
     };
     ESP_ERROR_CHECK(led_strip_new_rmt_device(&strip_config, &rmt_config, &pStrip_a));
-    
-    //led_strip_set_all_rgb(0, 0, 255);
+
+    // Lampeggio verde di avvio
+    for (int i = 0; i < BLINK_AVVIO_NUM; i++) {
+        led_strip_set_all_rgb(0, 255, 0, 0, 255, 0);
+        vTaskDelay(pdMS_TO_TICKS(BLINK_AVVIO_SEMIPERIODO_MS));
+        led_strip_clear(pStrip_a);
+        vTaskDelay(pdMS_TO_TICKS(BLINK_AVVIO_SEMIPERIODO_MS));
+    }
+
+    // Configura GPIO tasto (input con pull-up interno, active-low)
+    gpio_config_t btn_conf = {
+        .pin_bit_mask = 1ULL << NODE_WAKEUP_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE
+    };
+    gpio_config(&btn_conf);
+
     xTaskCreate(
         nodeTask,
         "nodeTask",
@@ -336,6 +503,14 @@ void nodeInit()
         NULL
     );
 
+    xTaskCreate(
+        buttonTask,
+        "buttonTask",
+        2048,
+        NULL,
+        9,
+        NULL
+    );
 }
 
 void visive_debug_init()
@@ -361,7 +536,7 @@ void app_main(void)
     consoleInit();
     consoleRegister(&cmd_tx);
     consoleRegister(&cmd_reboot);
-    consoleRegister(&cmd_address);    
+    consoleRegister(&cmd_address);
     nodeAddress = nvsGetNodeAddress();
     if ( nodeAddress < 0) {
         gatewayInit();
@@ -372,7 +547,7 @@ void app_main(void)
         nodeInit();
         ESP_LOGI(TAG, "NODE READY TO GO ON ADDRESS: %d",nodeAddress);
         #ifdef DEBUG_VISIVO
-            visive_debug_init();    
+            visive_debug_init();
         #endif
     }
 }
