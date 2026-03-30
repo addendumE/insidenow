@@ -667,27 +667,14 @@ void nodeInit()
     };
     ESP_ERROR_CHECK(adc_oneshot_config_channel(adcHandle, BATT_ADC_CHANNEL, &chan_cfg));
 
-    // Calibrazione ADC (curve fitting se disponibile, altrimenti line fitting)
-    bool cali_ok = false;
-#if ADC_CALI_SCHEME_CURVE_FITTING_SUPPORTED
+    // Calibrazione ADC: su ESP32-C3 è supportato solo lo schema curve fitting
     adc_cali_curve_fitting_config_t cali_cfg = {
         .unit_id  = ADC_UNIT_1,
         .chan     = BATT_ADC_CHANNEL,
         .atten    = BATT_ADC_ATTEN,
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    if (adc_cali_create_scheme_curve_fitting(&cali_cfg, &adcCaliHandle) == ESP_OK) {
-        cali_ok = true;
-    }
-#endif
-    if (!cali_ok) {
-        adc_cali_line_fitting_config_t lf_cfg = {
-            .unit_id  = ADC_UNIT_1,
-            .atten    = BATT_ADC_ATTEN,
-            .bitwidth = ADC_BITWIDTH_DEFAULT,
-        };
-        ESP_ERROR_CHECK(adc_cali_create_scheme_line_fitting(&lf_cfg, &adcCaliHandle));
-    }
+    ESP_ERROR_CHECK(adc_cali_create_scheme_curve_fitting(&cali_cfg, &adcCaliHandle));
 
     // --- Lampeggio verde di avvio ---
     for (int i = 0; i < BLINK_AVVIO_NUM; i++) {
