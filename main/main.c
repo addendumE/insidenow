@@ -33,8 +33,8 @@ static const char *TAG = "MAIN";
 
 // GATEWAY MODE CONFIGURATION
 #define UART_RX_PIN     GPIO_NUM_9
-#define LED_STS_PIN     GPIO_NUM_8
-#define LED_CTRL_PIN    GPIO_NUM_8
+#define LED_STS_PIN     GPIO_NUM_7
+#define LED_CTRL_PIN    GPIO_NUM_7
 // ATTENZIONE: LED_POWER_PIN era GPIO3, ora GPIO3 è usato come NODE_EXTPWR_GPIO (input).
 // Spostare il pin di alimentazione della LED strip su un altro GPIO libero.
 #define LED_POWER_PIN   GPIO_NUM_10
@@ -44,7 +44,7 @@ static const char *TAG = "MAIN";
 // --- Gestione risparmio energetico e batteria (solo modalità nodo) ---
 
 // GPIO tasto wake-up/spegnimento (active-low: pull-up esterno, GND quando premuto)
-#define NODE_WAKEUP_GPIO                    GPIO_NUM_5
+#define NODE_WAKEUP_GPIO                    GPIO_NUM_4
 
 // GPIO segnale alimentazione esterna (active-high: HIGH = collegato all'alimentazione/carica)
 #define NODE_EXTPWR_GPIO                    GPIO_NUM_3
