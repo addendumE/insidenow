@@ -23,6 +23,7 @@
 #include "led_strip.h"
 
 //#define DEBUG_VISIVO 1
+//#define DEBUG_TX 1
 
 static const char *TAG = "MAIN";
 #define MAX_GATEWAY_PAYLOAD 250
@@ -110,7 +111,7 @@ static void buttonTask(void *arg);
 static void chargingTask(void *arg);
 static void led_strip_set_all_rgb(uint8_t r1, uint8_t g1, uint8_t b1, uint8_t r2, uint8_t g2, uint8_t b2);
 static void node_led_clear(void);
-static void node_go_to_sleep(void);
+static void node_go_to_sleep(bool wait_button_release);
 static int   batt_read_mv(void);
 static float batt_get_level(void);
 static void  batt_level_to_rgb(float level, uint8_t *r, uint8_t *g, uint8_t *b);
@@ -158,6 +159,7 @@ static const esp_console_cmd_t cmd_reboot = {
 
 int consoleTx(int argc, char **argv)
 {
+    ESP_LOGI(TAG,"RECIVED TX COMMAND");
     if (argc == 2)
     {
         size_t len = strlen(argv[1])/2;
@@ -173,6 +175,7 @@ int consoleTx(int argc, char **argv)
             }
             pos += 2;
         }
+        ESP_LOG_BUFFER_HEX_LEVEL("READY TO TX:", data,len,ESP_LOG_INFO);
         nowSend(data, len);
         free(data);
     }
@@ -354,7 +357,7 @@ static void batt_level_to_rgb(float level, uint8_t *r, uint8_t *g, uint8_t *b)
  *   - NODE_EXTPWR_GPIO (GPIO3, alimentazione esterna) → HIGH
  * Non ritorna.
  */
-static void node_go_to_sleep(void)
+static void node_go_to_sleep(bool wait_button_release)
 {
     ESP_LOGI(TAG, "Entering deep sleep...");
 
@@ -369,11 +372,14 @@ static void node_go_to_sleep(void)
 
     gpio_set_level(LED_POWER_PIN, 0);
 
-    // Aspetta rilascio tasto (ESP32-C3: wakeup level-triggered, non edge)
-    while (gpio_get_level(NODE_WAKEUP_GPIO) == 0) {
-        vTaskDelay(pdMS_TO_TICKS(20));
+    // Aspetta rilascio tasto solo se il sleep è stato triggerato dal tasto:
+    // evita loop infinito nei casi di sleep per timeout (tasto non premuto)
+    if (wait_button_release) {
+        while (gpio_get_level(NODE_WAKEUP_GPIO) == 0) {
+            vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        vTaskDelay(pdMS_TO_TICKS(50)); // debounce
     }
-    vTaskDelay(pdMS_TO_TICKS(50)); // debounce
 
     // Configura sorgenti di wakeup
     ESP_ERROR_CHECK(esp_deep_sleep_enable_gpio_wakeup(
@@ -448,7 +454,7 @@ void nodeTask(void *arg)
             case NODE_PWR_WAITING_FIRST:
                 if ((now - stateStartTick) >= pdMS_TO_TICKS(TIMEOUT_SPEGNIMENTO_AVVIO)) {
                     ESP_LOGW(TAG, "No data within startup timeout, going to sleep");
-                    node_go_to_sleep();
+                    node_go_to_sleep(false);
                 }
                 break;
 
@@ -465,7 +471,7 @@ void nodeTask(void *arg)
             case NODE_PWR_SIGNAL_LOST:
                 if ((now - stateStartTick) >= pdMS_TO_TICKS(TIMEOUT_SPEGNIMENTO_SEGNALE_PERSO)) {
                     ESP_LOGW(TAG, "Signal lost timeout expired, going to sleep");
-                    node_go_to_sleep();
+                    node_go_to_sleep(false);
                 }
                 if ((now - lastBlinkTick) >= pdMS_TO_TICKS(BLINK_ARANCIO_SEMIPERIODO_MS)) {
                     lastBlinkTick = now;
@@ -557,7 +563,7 @@ static void buttonTask(void *arg)
                 vTaskDelay(pdMS_TO_TICKS(20));
                 if ((xTaskGetTickCount() - pressStart) >= pdMS_TO_TICKS(LONG_PRESS_MS)) {
                     ESP_LOGW(TAG, "Long press detected, going to sleep");
-                    node_go_to_sleep();
+                    node_go_to_sleep(true);
                 }
             }
         }
@@ -639,7 +645,7 @@ void nodeInit()
     gpio_config_t btn_conf = {
         .pin_bit_mask = 1ULL << NODE_WAKEUP_GPIO,
         .mode = GPIO_MODE_INPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,  // pull-up esterno
+        .pull_up_en = GPIO_PULLUP_ENABLE,//GPIO_PULLUP_DISABLE,  // pull-up esterno
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE
     };
@@ -706,6 +712,46 @@ void visive_debug_init()
     xTaskCreate(visive_debug_task, "visive_debug_task", 4096, NULL, 10, NULL);
 }
 
+#ifdef DEBUG_TX
+/*
+ * Invia ogni 3 secondi un payload di MAX_GATEWAY_PAYLOAD byte con i primi 6 byte
+ * impostati a (A,B,C, A,B,C) dove ABC scorre incrementalmente R→G→B.
+ * Step di 16 per canale → 16 passi × 3 canali = 48 invii per ciclo completo.
+ */
+static void debug_tx_task(void *arg)
+{
+    static uint8_t payload[MAX_GATEWAY_PAYLOAD];
+    uint8_t step = 0;   // 0..47
+    ESP_LOGI(TAG, "Debug TX task started");
+
+    while (1) {
+        uint8_t channel = step / 16; // 0=R, 1=G, 2=B
+        uint8_t value   = (step % 16) * 16 + (step % 16 == 15 ? 15 : 0);
+        // produce 0,16,32,...,224,255
+        value = (uint8_t)((step % 16) == 15 ? 255 : (step % 16) * 16);
+
+        uint8_t r = (channel == 0) ? value : 0;
+        uint8_t g = (channel == 1) ? value : 0;
+        uint8_t b = (channel == 2) ? value : 0;
+
+        memset(payload, 0, sizeof(payload));
+        payload[0] = r; payload[1] = g; payload[2] = b;
+        payload[3] = r; payload[4] = g; payload[5] = b;
+
+        ESP_LOGI(TAG, "DEBUG TX step=%d R:%d G:%d B:%d", step, r, g, b);
+        nowSend(payload, MAX_GATEWAY_PAYLOAD);
+
+        step = (step + 1) % 48;
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+}
+
+static void debug_tx_init(void)
+{
+    xTaskCreate(debug_tx_task, "debug_tx_task", 4096, NULL, 10, NULL);
+}
+#endif
+
 void app_main(void)
 {
     esp_err_t err = nvs_flash_init();
@@ -722,6 +768,9 @@ void app_main(void)
     if (nodeAddress < 0) {
         gatewayInit();
         ESP_LOGI(TAG, "GATEWAY READY TO GO");
+        #ifdef DEBUG_TX
+            debug_tx_init();
+        #endif
     }
     else {
         consoleRegister(&cmd_led);
